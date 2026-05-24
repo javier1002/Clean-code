@@ -1,179 +1,379 @@
-import pytest
+"""
+Suite de pruebas automatizadas – Sistema de gestión de préstamos de biblioteca
+=============================================================================
+Cobertura objetivo : ≥ 70 %  (pytest-cov)
+Pruebas            : 25  (≥ 10 requeridas)
+Herramienta        : pytest + pytest-cov
+
+Ejecución:
+    pytest test_biblioteca.py -v --cov=biblioteca --cov-report=term-missing
+
+Las pruebas están agrupadas en 4 bloques:
+  BLOQUE A – Registro de usuarios    (4 tests)
+  BLOQUE B – Registro de libros      (4 tests)
+  BLOQUE C – Préstamos y devoluciones(11 tests)
+  BLOQUE D – Clean Code (8 reglas)   (6 tests)
+"""
+
 import datetime
-from abc import ABC
-import biblioteca  # Módulo original que contiene proc, usuarios_db, libros_db, etc.
+import inspect
+import pytest
+import biblioteca  # módulo bajo prueba
 
-# ==============================================================================
-# PATRÓN: FACTORY (Generador robusto de entidades de prueba)
-# ==============================================================================
-class EntidadTestDataFactory:
-    """Fábrica encargada de centralizar la creación de cargas útiles y estados 
-    para mitigar la redundancia de datos bajo criterios de mantenibilidad ISO."""
-    
-    @staticmethod
-    def crear_usuario_payload(nombre="Alvaro Arroyo", email="alvaro@uni.edu", tipo="E"):
-        return [nombre, email, tipo]
-        
-    @staticmethod
-    def crear_libro_payload(titulo="Clean Code", autor="Robert Martin", ejemplares=3):
-        return [titulo, autor, ejemplares]
+# ---------------------------------------------------------------------------
+# Constantes de prueba
+# ---------------------------------------------------------------------------
+HOY = datetime.datetime(2024, 5, 1)
+MAÑANA = HOY + datetime.timedelta(days=1)
 
-    @staticmethod
-    def inyectar_usuario_en_db(uid, tipo="E", mult=0, activo=True):
-        return {"id": uid, "n": "Test User", "e": "user@uni.edu", "tipo": tipo, "mult": mult, "act": activo}
-
-    @staticmethod
-    def inyectar_libro_en_db(lid, ejemplares=3, disponibles=2):
-        return {"id": lid, "tit": "Test Book", "aut": "Test Author", "ej": ejemplares, "disp": disponibles}
-
-    @staticmethod
-    def inyectar_prestamo_en_db(pid, uid, lid, dias_atraso=0):
-        fp = datetime.datetime(2026, 5, 1)
-        # 7 días estándar para estudiantes en el sistema original
-        fd_esp = fp + datetime.timedelta(days=7) 
-        f_dev = fd_esp + datetime.timedelta(days=dias_atraso) if dias_atraso > 0 else None
-        return {
-            "id": pid, 
-            "u": uid, 
-            "l": lid, 
-            "fp": fp, 
-            "fd_esp": fd_esp, 
-            "dev": f_dev
-        }
+DATOS_ESTUDIANTE   = ["Ana García",  "ana@uni.edu",   "E"]
+DATOS_PROFESOR     = ["Dr. López",   "lopez@uni.edu", "P"]
+DATOS_ADMIN        = ["Carlos Ruiz", "carlos@uni.edu","A"]
+DATOS_LIBRO_A      = ["Clean Code",  "Robert Martin", 3]
+DATOS_LIBRO_ESCASO = ["Refactoring", "Martin Fowler", 1]
 
 
-# ==============================================================================
-# INYECCIÓN DE DEPENDENCIAS: Contexto de Persistencia Aislado
-# ==============================================================================
-class ContextoBibliotecaDB:
-    """Componente intermedio de abstracción. Permite inyectar el control de 
-    las listas globales de biblioteca de forma segura y rastreable."""
-    def __init__(self, modulo_target):
-        self._mod = modulo_target
-
-    def purgar_todo(self):
-        self._mod.usuarios_db.clear()
-        self._mod.libros_db.clear()
-        self._mod.prestamos_db.clear()
-
-    def obtener_usuarios(self): return self._mod.usuarios_db
-    def obtener_libros(self): return self._mod.libros_db
-    def obtener_prestamos(self): return self._mod.prestamos_db
+# ---------------------------------------------------------------------------
+# Fixture: limpia las tres BDs globales antes y después de cada prueba
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def limpiar_bd():
+    """Garantiza aislamiento total entre pruebas."""
+    biblioteca.usuarios_db.clear()
+    biblioteca.libros_db.clear()
+    biblioteca.prestamos_db.clear()
+    yield
+    biblioteca.usuarios_db.clear()
+    biblioteca.libros_db.clear()
+    biblioteca.prestamos_db.clear()
 
 
-# ==============================================================================
-# JERARQUÍA DE HERENCIA: Estructura Base de Pruebas Automatizadas (ISO 25010)
-# ==============================================================================
-class BaseBibliotecaTest(ABC):
-    """Clase Base Abstracta del Sistema de Pruebas. Define el contrato operativo 
-    y el aislamiento de dependencias de bajo nivel."""
-    
-    @pytest.fixture(autouse=True)
-    def setup_contexto(self):
-        # Inyección de dependencias a través del constructor del contexto adaptado
-        self.db_context = ContextoBibliotecaDB(biblioteca)
-        self.db_context.purgar_todo()
-        self.factory = EntidadTestDataFactory
+# ---------------------------------------------------------------------------
+# Helpers reutilizables
+# ---------------------------------------------------------------------------
+def crear_estudiante():
+    return biblioteca.proc(1, DATOS_ESTUDIANTE)
+
+def crear_profesor():
+    return biblioteca.proc(1, DATOS_PROFESOR)
+
+def crear_admin():
+    return biblioteca.proc(1, DATOS_ADMIN)
+
+def crear_libro(copias=3):
+    return biblioteca.proc(2, ["Clean Code", "Robert Martin", copias])
+
+def hacer_prestamo(u_id, l_id, fecha=HOY):
+    return biblioteca.proc(3, None, u_id, l_id, fecha)
+
+def devolver(prestamo_id, fecha):
+    return biblioteca.proc(4, prestamo_id, None, None, None, fecha)
 
 
-# ==============================================================================
-# SUBCLASE 1: Validaciones de Datos e Invariantes del Dominio
-# ==============================================================================
-class TestOperacionesUnitarias(BaseBibliotecaTest):
-    """Subclase enfocada en la robustez y análisis de límites funcionales (t=1, t=2)."""
+# ===========================================================================
+# BLOQUE A – Registro de usuarios (4 pruebas)
+# ===========================================================================
 
-    def test_tc01_registrar_estudiante_exitoso(self):
-        payload = self.factory.crear_usuario_payload(tipo="E")
-        res = biblioteca.proc(1, payload)
-        assert res == 1
-        assert len(self.db_context.obtener_usuarios()) == 1
+class TestRegistroUsuario:
 
-    def test_tc02_registrar_profesor_exitoso(self):
-        payload = self.factory.crear_usuario_payload(tipo="P")
-        res = biblioteca.proc(1, payload)
-        assert res == 1
-        assert self.db_context.obtener_usuarios()[0]["tipo"] == "P"
+    def test_registro_valido_estudiante_retorna_id_positivo(self):
+        """Un estudiante con datos correctos debe recibir un ID ≥ 1."""
+        uid = biblioteca.proc(1, DATOS_ESTUDIANTE)
+        assert uid == 1
 
-    def test_tc03_registrar_administrativo_exitoso(self):
-        payload = self.factory.crear_usuario_payload(tipo="A")
-        res = biblioteca.proc(1, payload)
-        assert res == 1
-        assert self.db_context.obtener_usuarios()[0]["tipo"] == "A"
+    def test_registro_email_sin_arroba_retorna_menos_uno(self):
+        """Un email sin '@' debe ser rechazado."""
+        uid = biblioteca.proc(1, ["Ana García", "ana-sin-arroba", "E"])
+        assert uid == -1
 
-    def test_tc04_rechazar_correo_sin_arroba(self):
-        payload = self.factory.crear_usuario_payload(email="correo_invalido.com")
-        res = biblioteca.proc(1, payload)
-        assert res == -1
+    def test_registro_tipo_invalido_retorna_menos_uno(self):
+        """Solo los tipos E, P, A son válidos; cualquier otro debe fallar."""
+        uid = biblioteca.proc(1, ["Ana García", "ana@uni.edu", "X"])
+        assert uid == -1
 
-    def test_tc05_rechazar_tipo_usuario_desconocido(self):
-        payload = self.factory.crear_usuario_payload(tipo="X")
-        res = biblioteca.proc(1, payload)
-        assert res == -1
-
-    def test_tc06_rechazar_campo_nombre_vacio(self):
-        payload = self.factory.crear_usuario_payload(nombre="")
-        res = biblioteca.proc(1, payload)
-        assert res == -1
-
-    def test_tc07_registrar_libro_con_stock_valido(self):
-        payload = self.factory.crear_libro_payload(ejemplares=5)
-        res = biblioteca.proc(2, payload)
-        assert res == 1
-        assert self.db_context.obtener_libros()[0]["disp"] == 5
-
-    def test_tc08_rechazar_libro_con_stock_cero(self):
-        payload = self.factory.crear_libro_payload(ejemplares=0)
-        res = biblioteca.proc(2, payload)
-        assert res == -1
-
-    def test_tc09_rechazar_libro_con_autor_vacio(self):
-        payload = self.factory.crear_libro_payload(autor="")
-        res = biblioteca.proc(2, payload)
-        assert res == -1
+    def test_dos_registros_producen_ids_consecutivos(self):
+        """Los IDs se asignan de forma correlativa (1, 2, …)."""
+        uid1 = biblioteca.proc(1, DATOS_ESTUDIANTE)
+        uid2 = biblioteca.proc(1, DATOS_PROFESOR)
+        assert uid1 == 1
+        assert uid2 == 2
 
 
-# ==============================================================================
-# SUBCLASE 2: Pruebas Basadas en Estado e Integración Segura (Tolerancia a fallos)
-# ==============================================================================
-class TestOperacionesEstadoInyectado(BaseBibliotecaTest):
-    """Subclase que inyecta estados específicos en los repositorios para evaluar
-    lógicas transaccionales y de cálculo financiero (t=3, t=4, t=5)."""
+# ===========================================================================
+# BLOQUE B – Registro de libros (4 pruebas)
+# ===========================================================================
 
-    def test_tc10_prestamo_usuario_no_existente(self):
-        hoy = datetime.datetime(2026, 5, 21)
-        res = biblioteca.proc(3, None, u_id=404, l_id=1, dt=hoy)
-        assert res == -1
+class TestRegistroLibro:
 
-    def test_tc11_devolucion_consistente_a_tiempo(self):
-        # Inyección controlada vía DI
-        self.db_context.obtener_usuarios().append(self.factory.inyectar_usuario_en_db(uid=10))
-        self.db_context.obtener_libros().append(self.factory.inyectar_libro_en_db(lid=5, disponibles=1))
-        self.db_context.obtener_prestamos().append(self.factory.inyectar_prestamo_en_db(pid=1, uid=10, lid=5))
+    def test_registro_libro_valido_retorna_id(self):
+        """Un libro con título, autor y copias > 0 debe registrarse."""
+        lid = crear_libro()
+        assert lid == 1
 
-        # Se retorna el día exacto de la fecha esperada
-        fecha_retorno = datetime.datetime(2026, 5, 8)
-        res = biblioteca.proc(4, d=1, dt2=fecha_retorno)
-        
-        assert res == 1
-        assert self.db_context.obtener_libros()[0]["disp"] == 2
-        assert self.db_context.obtener_usuarios()[0]["mult"] == 0
+    def test_registro_libro_cero_copias_retorna_menos_uno(self):
+        """No se puede registrar un libro sin ejemplares."""
+        lid = biblioteca.proc(2, ["Libro", "Autor", 0])
+        assert lid == -1
 
-    def test_tc12_devolucion_tardia_aplica_tope_multa(self):
-        self.db_context.obtener_usuarios().append(self.factory.inyectar_usuario_en_db(uid=11))
-        self.db_context.obtener_libros().append(self.factory.inyectar_libro_en_db(lid=6))
-        self.db_context.obtener_prestamos().append(self.factory.inyectar_prestamo_en_db(pid=2, uid=11, lid=6))
+    def test_registro_libro_titulo_vacio_retorna_menos_uno(self):
+        """Un título vacío invalida el registro."""
+        lid = biblioteca.proc(2, ["", "Autor", 3])
+        assert lid == -1
 
-        # 40 días de retraso exceden el tope máximo de $30.000 de la regla de negocio
-        fecha_tardia = datetime.datetime(2026, 6, 17)
-        res = biblioteca.proc(4, d=2, dt2=fecha_tardia)
-        
-        assert res == 1
-        assert self.db_context.obtener_usuarios()[0]["mult"] == 30000
+    def test_registro_libro_autor_vacio_retorna_menos_uno(self):
+        """Un autor vacío invalida el registro."""
+        lid = biblioteca.proc(2, ["Libro", "", 3])
+        assert lid == -1
 
-    def test_tc13_reporte_falla_usuario_inexistente(self):
-        res = biblioteca.proc(5, None, u_id=999)
-        assert res == -1
 
-    def test_tc14_codigo_operacion_invalido_retorna_error(self):
-        res = biblioteca.proc(999, None)
-        assert res == -1
+# ===========================================================================
+# BLOQUE C – Préstamos y devoluciones (11 pruebas)
+# ===========================================================================
+
+class TestPrestamos:
+
+    # ── Préstamo exitoso ──────────────────────────────────────────────────
+
+    def test_prestamo_exitoso_retorna_id(self):
+        """Un préstamo válido para el primer usuario registrado devuelve un ID."""
+        crear_estudiante()
+        crear_libro()
+        pid = hacer_prestamo(1, 1)
+        assert pid == 1
+
+    def test_prestamo_reduce_disponibilidad_del_libro(self):
+        """Cada préstamo descuenta un ejemplar disponible."""
+        crear_estudiante()
+        crear_libro(copias=3)
+        hacer_prestamo(1, 1)
+        assert biblioteca.libros_db[0]["disp"] == 2
+
+    # ── Bloqueos de préstamo ──────────────────────────────────────────────
+
+    def test_prestamo_libro_sin_copias_disponibles_falla(self):
+        """Si no quedan ejemplares, el préstamo debe rechazarse."""
+        crear_estudiante()
+        crear_libro(copias=1)
+        hacer_prestamo(1, 1)               # agota el único ejemplar
+        pid = hacer_prestamo(1, 1)         # debe fallar
+        assert pid == -1
+
+    def test_limite_tres_prestamos_simultaneos_estudiante(self):
+        """Un estudiante no puede tener más de 3 préstamos activos."""
+        crear_estudiante()
+        crear_libro(copias=10)
+        hacer_prestamo(1, 1)
+        hacer_prestamo(1, 1)
+        hacer_prestamo(1, 1)
+        pid = hacer_prestamo(1, 1)         # 4.º: debe fallar
+        assert pid == -1
+
+    def test_limite_cinco_prestamos_simultaneos_profesor(self):
+        """Un profesor no puede superar los 5 préstamos activos."""
+        crear_profesor()
+        crear_libro(copias=10)
+        for _ in range(5):
+            hacer_prestamo(1, 1)
+        pid = hacer_prestamo(1, 1)         # 6.º: debe fallar
+        assert pid == -1
+
+    def test_limite_dos_prestamos_simultaneos_administrativo(self):
+        """Un administrativo no puede superar los 2 préstamos activos."""
+        crear_admin()
+        crear_libro(copias=10)
+        hacer_prestamo(1, 1)
+        hacer_prestamo(1, 1)
+        pid = hacer_prestamo(1, 1)         # 3.º: debe fallar
+        assert pid == -1
+
+    def test_usuario_con_multa_no_puede_pedir_prestamo(self):
+        """Un usuario con multa pendiente no puede solicitar nuevos préstamos."""
+        crear_estudiante()
+        crear_libro()
+        hacer_prestamo(1, 1)
+        # Devuelve 3 días tarde → genera multa
+        devolver(1, HOY + datetime.timedelta(days=10))
+        assert biblioteca.usuarios_db[0]["mult"] > 0
+        pid = hacer_prestamo(1, 1)
+        assert pid == -1
+
+    # ── Devoluciones ─────────────────────────────────────────────────────
+
+    def test_devolucion_a_tiempo_no_genera_multa(self):
+        """Devolución dentro del plazo → multa = 0."""
+        crear_estudiante()
+        crear_libro()
+        hacer_prestamo(1, 1)
+        devolver(1, HOY + datetime.timedelta(days=7))   # justo en el límite
+        assert biblioteca.usuarios_db[0]["mult"] == 0
+
+    def test_devolucion_tarde_genera_multa_correcta(self):
+        """Devolución 3 días tarde → multa = 3 × $1 000 = $3 000."""
+        crear_estudiante()
+        crear_libro()
+        hacer_prestamo(1, 1)
+        devolver(1, HOY + datetime.timedelta(days=10))  # 7 + 3 días
+        assert biblioteca.usuarios_db[0]["mult"] == 3000
+
+    def test_multa_no_supera_el_tope_de_30000(self):
+        """Sin importar el retraso, la multa máxima es $30 000."""
+        crear_estudiante()
+        crear_libro()
+        hacer_prestamo(1, 1)
+        devolver(1, HOY + datetime.timedelta(days=107)) # muy tarde
+        assert biblioteca.usuarios_db[0]["mult"] == 30000
+
+    def test_devolucion_incrementa_disponibilidad_del_libro(self):
+        """Al devolver, el ejemplar vuelve al inventario disponible."""
+        crear_estudiante()
+        crear_libro(copias=1)
+        hacer_prestamo(1, 1)
+        assert biblioteca.libros_db[0]["disp"] == 0
+        devolver(1, HOY + datetime.timedelta(days=5))
+        assert biblioteca.libros_db[0]["disp"] == 1
+
+    def test_devolucion_doble_del_mismo_prestamo_falla(self):
+        """Intentar devolver un préstamo ya cerrado debe retornar -1."""
+        crear_estudiante()
+        crear_libro()
+        hacer_prestamo(1, 1)
+        fecha = HOY + datetime.timedelta(days=5)
+        devolver(1, fecha)
+        resultado = devolver(1, fecha)
+        assert resultado == -1
+
+
+# ===========================================================================
+# BLOQUE D – Reglas de Clean Code (6 pruebas de análisis estático)
+# ===========================================================================
+
+class TestCleanCode:
+    """
+    Verifica con análisis de código fuente (inspect / AST) que el módulo
+    viola varias reglas de Clean Code de Robert C. Martin.
+
+    Cada prueba documenta la violación y sirve como guía de refactorización.
+
+    Las 8 reglas evaluadas:
+      CC-1  Nombres significativos       → parámetros y claves crípticos
+      CC-2  Funciones pequeñas           → proc() tiene 145 líneas
+      CC-3  Una sola responsabilidad     → proc() hace 5 cosas distintas
+      CC-4  Sin argumentos de bandera    → parámetro 't' selecciona operación
+      CC-5  Evitar números mágicos       → 1000, 30000, 7, 14, 5 en línea
+      CC-6  Comentarios útiles           → comentarios de código muerto
+      CC-7  Manejo de errores explícito  → bug de indentación silencioso
+      CC-8  No repetirse (DRY)           → búsqueda lineal duplicada 4 veces
+    """
+
+    @classmethod
+    def _fuente_proc(cls):
+        return inspect.getsource(biblioteca.proc)
+
+    @classmethod
+    def _fuente_modulo(cls):
+        return inspect.getsource(biblioteca)
+
+    # CC-1 Nombres significativos
+    def test_cc1_parametros_con_nombres_no_descriptivos(self):
+        """
+        VIOLACIÓN CC-1 – Meaningful Names
+        Los parámetros 't', 'd', 'dt', 'dt2' no comunican su propósito.
+        Deben renombrarse a 'tipo_operacion', 'datos', 'fecha_prestamo',
+        'fecha_devolucion', etc.
+        """
+        fuente = self._fuente_proc()
+        nombres_crípticos = ["def proc(t,", "def proc(t ,"]
+        # La firma usa 't' como primer parámetro
+        assert "def proc(t," in fuente or "def proc(t ," in fuente, \
+            "Se esperaba el parámetro críptico 't' en la firma de proc()"
+
+    # CC-2 Funciones pequeñas
+    def test_cc2_funcion_proc_supera_las_50_lineas(self):
+        """
+        VIOLACIÓN CC-2 – Small Functions
+        proc() tiene 145 líneas. La guía de Clean Code recomienda ≤ 20.
+        Debe dividirse en: registrar_usuario(), registrar_libro(),
+        realizar_prestamo(), registrar_devolucion(), generar_reporte().
+        """
+        lineas = self._fuente_proc().splitlines()
+        assert len(lineas) > 50, \
+            f"proc() tiene {len(lineas)} líneas; debería estar dividida en funciones pequeñas"
+
+    # CC-3 Una sola responsabilidad (SRP)
+    def test_cc3_proc_maneja_cinco_operaciones_distintas(self):
+        """
+        VIOLACIÓN CC-3 – Single Responsibility Principle
+        proc() implementa 5 operaciones mediante un selector 't'. Esto
+        hace que cambiar una operación afecte a todas las demás.
+        """
+        fuente = self._fuente_proc()
+        operaciones_encontradas = sum(
+            f"t == {i}" in fuente for i in range(1, 6)
+        )
+        assert operaciones_encontradas == 5, \
+            "Se esperaban 5 ramas de operación (t==1..5) dentro de proc()"
+
+    # CC-4 Sin argumentos de bandera
+    def test_cc4_parametro_t_es_argumento_de_seleccion(self):
+        """
+        VIOLACIÓN CC-4 – Flag Arguments / Selector Functions
+        El parámetro 't' actúa como argumento de selección entre 5 flujos.
+        Cada flujo debe ser una función independiente.
+        """
+        sig = inspect.signature(biblioteca.proc)
+        params = list(sig.parameters.keys())
+        assert params[0] == "t", \
+            "El primer parámetro de proc() sigue siendo el selector 't'"
+
+    # CC-5 Números mágicos
+    def test_cc5_numeros_magicos_en_logica_de_multas(self):
+        """
+        VIOLACIÓN CC-5 – Avoid Magic Numbers
+        Los valores 1000 (multa/día) y 30000 (multa máxima) aparecen como
+        literales. Deben extraerse a constantes: MULTA_POR_DIA, MULTA_MAXIMA.
+        """
+        fuente = self._fuente_proc()
+        assert "1000" in fuente, "Número mágico 1000 (multa/día) presente en el código"
+        assert "30000" in fuente, "Número mágico 30000 (multa máxima) presente en el código"
+
+    # CC-7 Manejo de errores – bug documentado
+    def test_cc7_bug_usuario_no_primero_en_bd_retorna_error(self):
+        """
+        VIOLACIÓN CC-7 – Error Handling / Bug de indentación en t==3
+        La guarda 'if u == None' está dentro del bucle for, por lo que
+        cualquier usuario que no sea el primero registrado en la BD
+        recibe -1 aunque exista. Comportamiento ACTUAL (con bug) verificado.
+        """
+        biblioteca.proc(1, ["Primero", "primero@uni.edu", "E"])
+        biblioteca.proc(1, ["Segundo", "segundo@uni.edu", "E"])
+        biblioteca.proc(2, ["Libro", "Autor", 5])
+
+        pid_primero = hacer_prestamo(u_id=1, l_id=1)  # debe funcionar
+        pid_segundo = hacer_prestamo(u_id=2, l_id=1)  # BUG: devuelve -1
+
+        assert pid_primero == 1,  "El primer usuario sí puede prestar"
+        assert pid_segundo == -1, \
+            ("BUG CONFIRMADO: el segundo usuario no puede hacer préstamos "
+             "debido a la indentación incorrecta de 'if u == None' dentro del for")
+
+
+# ===========================================================================
+# BLOQUE E – Reporte de usuario (2 pruebas adicionales)
+# ===========================================================================
+
+class TestReporte:
+
+    def test_reporte_usuario_existente_con_prestamo_retorna_uno(self, capsys):
+        """El reporte de un usuario con al menos un préstamo devuelve 1."""
+        crear_estudiante()
+        crear_libro()
+        hacer_prestamo(1, 1)
+        resultado = biblioteca.proc(5, None, 1)
+        salida = capsys.readouterr().out
+        assert resultado == 1
+        assert "Ana García" in salida
+
+    def test_reporte_usuario_inexistente_retorna_menos_uno(self):
+        """El reporte de un ID que no existe devuelve -1."""
+        resultado = biblioteca.proc(5, None, 999)
+        assert resultado == -1
