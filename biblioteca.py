@@ -1,15 +1,15 @@
 """
-biblioteca.py — Versión autocontenida
-======================================
-Toda la lógica vive en este único archivo.
-Expone la API legacy (proc, usuarios_db, libros_db, prestamos_db)
-que espera la suite de pruebas, implementada con código limpio internamente.
+biblioteca.py
+=============
+Sistema de gestión de préstamos de biblioteca.
+
+Estado único: un solo conjunto de listas (usuarios_db, libros_db, prestamos_db)
+con objetos que soportan tanto acceso por atributo (.disp) como por clave (["disp"]),
+eliminando la doble representación dict/objeto de la versión anterior.
 """
 
-from __future__ import annotations
-
 import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -39,15 +39,9 @@ DIAS_PRESTAMO: dict[TipoUsuario, int] = {
     TipoUsuario.ADMINISTRATIVO: 5,
 }
 
-_TIPO_STR: dict[str, TipoUsuario] = {
-    "E": TipoUsuario.ESTUDIANTE,
-    "P": TipoUsuario.PROFESOR,
-    "A": TipoUsuario.ADMINISTRATIVO,
-}
-
 
 # ---------------------------------------------------------------------------
-# Excepciones de dominio
+# Excepciones — solo las que tienen un caller que las distingue
 # ---------------------------------------------------------------------------
 
 class ErrorBiblioteca(Exception):
@@ -62,143 +56,84 @@ class LibroNoEncontrado(ErrorBiblioteca):
 class PrestamoNoEncontrado(ErrorBiblioteca):
     pass
 
-class UsuarioInactivo(ErrorBiblioteca):
-    pass
-
-class UsuarioConMultas(ErrorBiblioteca):
-    pass
-
-class LimitePrestamosAlcanzado(ErrorBiblioteca):
-    pass
-
-class SinEjemplaresDisponibles(ErrorBiblioteca):
-    pass
-
 class PrestamoYaDevuelto(ErrorBiblioteca):
     pass
 
 
 # ---------------------------------------------------------------------------
 # Entidades
+#
+# __getitem__ permite que los tests usen obj["disp"] / obj["mult"]
+# sin necesidad de mantener una lista paralela de dicts.
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _Usuario:
+class Usuario:
     id:     int
     nombre: str
     email:  str
     tipo:   TipoUsuario
-    multas: int  = 0
+    mult:   int  = 0
     activo: bool = True
 
-
-@dataclass
-class _Libro:
-    id:          int
-    titulo:      str
-    autor:       str
-    ejemplares:  int
-    disponibles: int
+    def __getitem__(self, key: str):
+        return getattr(self, key)
 
 
 @dataclass
-class _Prestamo:
-    id:               int
-    usuario_id:       int
-    libro_id:         int
-    fecha_prestamo:   datetime.datetime
-    fecha_esperada:   datetime.datetime
-    fecha_devolucion: datetime.datetime | None = None
+class Libro:
+    id:   int
+    tit:  str
+    aut:  str
+    ej:   int
+    disp: int
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+
+@dataclass
+class Prestamo:
+    id:     int
+    u:      int
+    l:      int
+    fp:     datetime.datetime
+    fd_esp: datetime.datetime
+    dev:    datetime.datetime | None = None
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
 
 
 # ---------------------------------------------------------------------------
-# Estado interno (listas de objetos, nunca expuestas directamente)
+# Estado global — único, sin espejo
 # ---------------------------------------------------------------------------
 
-_usuarios:  list[_Usuario]  = []
-_libros:    list[_Libro]    = []
-_prestamos: list[_Prestamo] = []
+usuarios_db:  list[Usuario]  = []
+libros_db:    list[Libro]    = []
+prestamos_db: list[Prestamo] = []
 
 
 # ---------------------------------------------------------------------------
-# Listas legacy que los tests leen/limpian directamente
-# Cada operación las mantiene sincronizadas con el estado interno.
+# Búsquedas (DRY)
 # ---------------------------------------------------------------------------
 
-usuarios_db: list[dict] = []
-libros_db:   list[dict] = []
-prestamos_db: list[dict] = []
-
-
-def _sync_legacy() -> None:
-    """Vuelca el estado interno hacia las listas legacy que leen los tests."""
-    usuarios_db.clear()
-    for u in _usuarios:
-        usuarios_db.append({
-            "id": u.id, "n": u.nombre, "e": u.email,
-            "tipo": u.tipo.value, "mult": u.multas, "act": u.activo,
-        })
-    libros_db.clear()
-    for l in _libros:
-        libros_db.append({
-            "id": l.id, "tit": l.titulo, "aut": l.autor,
-            "ej": l.ejemplares, "disp": l.disponibles,
-        })
-    prestamos_db.clear()
-    for p in _prestamos:
-        prestamos_db.append({
-            "id": p.id, "u": p.usuario_id, "l": p.libro_id,
-            "fp": p.fecha_prestamo, "fd_esp": p.fecha_esperada, "dev": p.fecha_devolucion,
-        })
-
-
-def _load_from_legacy() -> None:
-    """Reconstruye el estado interno desde las listas legacy.
-
-    Necesario porque el fixture de pytest llama .clear() directamente
-    sobre usuarios_db/libros_db/prestamos_db sin pasar por esta capa.
-    """
-    _usuarios.clear()
+def _buscar_usuario(usuario_id: int) -> Usuario:
     for u in usuarios_db:
-        _usuarios.append(_Usuario(
-            id=u["id"], nombre=u["n"], email=u["e"],
-            tipo=TipoUsuario(u["tipo"]), multas=u["mult"], activo=u["act"],
-        ))
-    _libros.clear()
-    for l in libros_db:
-        _libros.append(_Libro(
-            id=l["id"], titulo=l["tit"], autor=l["aut"],
-            ejemplares=l["ej"], disponibles=l["disp"],
-        ))
-    _prestamos.clear()
-    for p in prestamos_db:
-        _prestamos.append(_Prestamo(
-            id=p["id"], usuario_id=p["u"], libro_id=p["l"],
-            fecha_prestamo=p["fp"], fecha_esperada=p["fd_esp"],
-            fecha_devolucion=p["dev"],
-        ))
-
-
-# ---------------------------------------------------------------------------
-# Búsquedas (DRY: un único lugar por entidad)
-# ---------------------------------------------------------------------------
-
-def _buscar_usuario(usuario_id: int) -> _Usuario:
-    for u in _usuarios:
         if u.id == usuario_id:
             return u
     raise UsuarioNoEncontrado(f"No existe el usuario {usuario_id}")
 
 
-def _buscar_libro(libro_id: int) -> _Libro:
-    for l in _libros:
+def _buscar_libro(libro_id: int) -> Libro:
+    for l in libros_db:
         if l.id == libro_id:
             return l
     raise LibroNoEncontrado(f"No existe el libro {libro_id}")
 
 
-def _buscar_prestamo(prestamo_id: int) -> _Prestamo:
-    for p in _prestamos:
+def _buscar_prestamo(prestamo_id: int) -> Prestamo:
+    for p in prestamos_db:
         if p.id == prestamo_id:
             return p
     raise PrestamoNoEncontrado(f"No existe el préstamo {prestamo_id}")
@@ -211,92 +146,96 @@ def _buscar_prestamo(prestamo_id: int) -> _Prestamo:
 def _registrar_usuario(nombre: str, email: str, tipo_str: str) -> int:
     if not nombre or not email or "@" not in email:
         return -1
-    if tipo_str not in _TIPO_STR:
+    try:
+        tipo = TipoUsuario(tipo_str)
+    except ValueError:
         return -1
-    nuevo_id = len(_usuarios) + 1
-    _usuarios.append(_Usuario(
-        id=nuevo_id, nombre=nombre, email=email, tipo=_TIPO_STR[tipo_str],
-    ))
+    nuevo_id = len(usuarios_db) + 1
+    usuarios_db.append(Usuario(id=nuevo_id, nombre=nombre, email=email, tipo=tipo))
     print(f"Usuario registrado: {nombre}")
-    _sync_legacy()
     return nuevo_id
 
 
 def _registrar_libro(titulo: str, autor: str, ejemplares: int) -> int:
     if not titulo or not autor or ejemplares <= 0:
         return -1
-    nuevo_id = len(_libros) + 1
-    _libros.append(_Libro(
-        id=nuevo_id, titulo=titulo, autor=autor,
-        ejemplares=ejemplares, disponibles=ejemplares,
-    ))
+    nuevo_id = len(libros_db) + 1
+    libros_db.append(Libro(id=nuevo_id, tit=titulo, aut=autor, ej=ejemplares, disp=ejemplares))
     print(f"Libro registrado: {titulo}")
-    _sync_legacy()
     return nuevo_id
 
 
-def _validar_usuario_para_prestamo(usuario: _Usuario) -> None:
+def _validar_usuario_para_prestamo(usuario: Usuario) -> str | None:
+    """Devuelve un mensaje de error, o None si el usuario puede pedir prestado."""
     if not usuario.activo:
-        raise UsuarioInactivo()
-    if usuario.multas > 0:
-        raise UsuarioConMultas()
-    activos = sum(
-        1 for p in _prestamos
-        if p.usuario_id == usuario.id and p.fecha_devolucion is None
-    )
+        return "usuario inactivo"
+    if usuario.mult > 0:
+        return "usuario tiene multas"
+    activos = sum(1 for p in prestamos_db if p.u == usuario.id and p.dev is None)
     if activos >= LIMITE_PRESTAMOS[usuario.tipo]:
-        raise LimitePrestamosAlcanzado()
+        return "límite de préstamos alcanzado"
+    return None
 
 
-def _registrar_prestamo(
-    usuario_id: int, libro_id: int, fecha: datetime.datetime
-) -> int:
+def _registrar_prestamo(usuario_id: int, libro_id: int, fecha: datetime.datetime) -> int:
     try:
         usuario = _buscar_usuario(usuario_id)
-        _validar_usuario_para_prestamo(usuario)
-        libro = _buscar_libro(libro_id)
-        if libro.disponibles <= 0:
-            raise SinEjemplaresDisponibles()
-        fecha_esperada = fecha + datetime.timedelta(days=DIAS_PRESTAMO[usuario.tipo])
-        nuevo_id = len(_prestamos) + 1
-        _prestamos.append(_Prestamo(
-            id=nuevo_id, usuario_id=usuario_id, libro_id=libro_id,
-            fecha_prestamo=fecha, fecha_esperada=fecha_esperada,
-        ))
-        libro.disponibles -= 1
-        print("Préstamo registrado")
-        _sync_legacy()
-        return nuevo_id
-    except ErrorBiblioteca as exc:
-        print(f"Error: {exc}")
+    except UsuarioNoEncontrado:
+        print("Error: usuario no existe")
         return -1
 
+    error = _validar_usuario_para_prestamo(usuario)
+    if error:
+        print(f"Error: {error}")
+        return -1
 
-def _calcular_multa(prestamo: _Prestamo, fecha_devolucion: datetime.datetime) -> int:
-    if fecha_devolucion <= prestamo.fecha_esperada:
+    try:
+        libro = _buscar_libro(libro_id)
+    except LibroNoEncontrado:
+        print("Error: libro no existe")
+        return -1
+
+    if libro.disp <= 0:
+        print("Error: no hay ejemplares disponibles")
+        return -1
+
+    fecha_esperada = fecha + datetime.timedelta(days=DIAS_PRESTAMO[usuario.tipo])
+    nuevo_id = len(prestamos_db) + 1
+    prestamos_db.append(Prestamo(
+        id=nuevo_id, u=usuario_id, l=libro_id, fp=fecha, fd_esp=fecha_esperada,
+    ))
+    libro.disp -= 1
+    print("Préstamo registrado")
+    return nuevo_id
+
+
+def _calcular_multa(prestamo: Prestamo, fecha_devolucion: datetime.datetime) -> int:
+    if fecha_devolucion <= prestamo.fd_esp:
         return 0
-    dias = (fecha_devolucion - prestamo.fecha_esperada).days
+    dias = (fecha_devolucion - prestamo.fd_esp).days
     return min(dias * MULTA_POR_DIA, MULTA_MAXIMA)
 
 
 def _devolver_libro(prestamo_id: int, fecha: datetime.datetime) -> int:
     try:
         prestamo = _buscar_prestamo(prestamo_id)
-        if prestamo.fecha_devolucion is not None:
-            raise PrestamoYaDevuelto()
-        prestamo.fecha_devolucion = fecha
-        _buscar_libro(prestamo.libro_id).disponibles += 1
-        multa = _calcular_multa(prestamo, fecha)
-        if multa > 0:
-            _buscar_usuario(prestamo.usuario_id).multas += multa
-            print(f"Devuelto con multa: ${multa}")
-        else:
-            print("Devuelto a tiempo")
-        _sync_legacy()
-        return 1
-    except (PrestamoNoEncontrado, PrestamoYaDevuelto) as exc:
-        print(f"Error: {exc}")
+    except PrestamoNoEncontrado:
         return -1
+
+    if prestamo.dev is not None:
+        print("Error: ya fue devuelto")
+        return -1
+
+    prestamo.dev = fecha
+    _buscar_libro(prestamo.l).disp += 1
+
+    multa = _calcular_multa(prestamo, fecha)
+    if multa > 0:
+        _buscar_usuario(prestamo.u).mult += multa
+        print(f"Devuelto con multa: ${multa}")
+    else:
+        print("Devuelto a tiempo")
+    return 1
 
 
 def _reporte_usuario(usuario_id: int) -> int:
@@ -304,29 +243,29 @@ def _reporte_usuario(usuario_id: int) -> int:
         usuario = _buscar_usuario(usuario_id)
     except UsuarioNoEncontrado:
         return -1
-    prestamos_usuario = [p for p in _prestamos if p.usuario_id == usuario_id]
+
+    prestamos_usuario = [p for p in prestamos_db if p.u == usuario_id]
     if not prestamos_usuario:
         return -1
+
     print("=== Reporte ===")
     print(f"Nombre: {usuario.nombre}")
     print(f"Email:  {usuario.email}")
     print(f"Tipo:   {usuario.tipo.name.capitalize()}")
-    print(f"Multas: ${usuario.multas}")
+    print(f"Multas: ${usuario.mult}")
     for prestamo in prestamos_usuario:
-        libro  = _buscar_libro(prestamo.libro_id)
-        estado = "Activo" if prestamo.fecha_devolucion is None else "Devuelto"
-        print(f"  - {libro.titulo} [{estado}]")
+        titulo = _buscar_libro(prestamo.l).tit
+        estado = "Activo" if prestamo.dev is None else "Devuelto"
+        print(f"  - {titulo} [{estado}]")
     return 1
 
 
 # ---------------------------------------------------------------------------
-# API legacy — fachada que mantiene compatibilidad con los tests
+# API legacy
 # ---------------------------------------------------------------------------
 
-def proc(t, d, u_id=None, l_id=None, dt=None, dt2=None):  # noqa: C901
-    """Fachada legacy: delega en las funciones limpias de negocio."""
-    _load_from_legacy()
-
+def proc(t, d, u_id=None, l_id=None, dt=None, dt2=None):
+    """Punto de entrada requerido por la suite de pruebas."""
     if t == 1:
         return _registrar_usuario(d[0], d[1], d[2])
     if t == 2:
